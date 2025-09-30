@@ -348,10 +348,16 @@ def clean_malaria_data(df):
                 add_comment(idx, f"Consistency Error: [{pq_mg_c} is '{pq_mg}' but {pq_tab_c} is blank]")
 
     # === IHRP FLAG ===
-    ihrp_townships = {
+     ihrp_townships = {
         "Bhamo","Mohnyin","Shwegu","Buthidaung","Kyauktaw","Maungdaw","Minbya","Mrauk-U","Myebon","Paletwa","Ponnagyun",
         "Hseni","Kunlong","Kutkai","Kyaukme","Laukkaing","Manton","Muse","Namhkan","Namhsan","Namtu","Lashio",
-        "Chinshwehaw Sub-township (Kokang SAZ)","Chinshwehaw"
+        "Chinshwehaw Sub-township (Kokang SAZ)","Chinshwehaw",
+        "Bawlake","Demoso","Hpasawng","Hpruso","Loikaw","Mese","Shadaw","Thandaunggyi","Pyinmana","Pekon","Hsihseng",
+        "Falam","Hakha","Kanpetlet","Matupi","Mindat","Tedim","Thantlang","Tonzang",
+        "Ayadaw","Banmauk","Budalin","Chaung-U","Homalin","Indaw","Kale","Kanbalu","Kani","Katha","Kawlin","Khin-U",
+        "Kyunhla","Mawlaik","Mingin","Myaung","Myinmu","Pale","Pinlebu","Sagaing","Salingyi","Shwebo","Tabayin","Taze",
+        "Tigyaing","Wetlet","Wuntho","Ye-U","Yinmarbin",
+        "Gangaw","Myaing","Pauk","Saw","Tilin","Yesagyo","Mindon","Pakokku","Salin","Seikphyu","Thayet","Tamu","Sinbaungwe"
     }
     town_c = get_col("TOWNSHIP"); sdp_c = get_col("SDP")
     df['IHRP'] = None
