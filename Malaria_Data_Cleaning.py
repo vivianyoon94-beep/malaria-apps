@@ -348,7 +348,7 @@ def clean_malaria_data(df):
                 add_comment(idx, f"Consistency Error: [{pq_mg_c} is '{pq_mg}' but {pq_tab_c} is blank]")
 
     # === IHRP FLAG ===
-     ihrp_townships = {
+    ihrp_townships = {
         "Bhamo","Mohnyin","Shwegu","Buthidaung","Kyauktaw","Maungdaw","Minbya","Mrauk-U","Myebon","Paletwa","Ponnagyun",
         "Hseni","Kunlong","Kutkai","Kyaukme","Laukkaing","Manton","Muse","Namhkan","Namhsan","Namtu","Lashio",
         "Chinshwehaw Sub-township (Kokang SAZ)","Chinshwehaw",
