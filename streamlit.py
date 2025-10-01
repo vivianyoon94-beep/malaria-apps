@@ -188,7 +188,7 @@ if clean_file is not None:
                     out.seek(0)
 
                     st.download_button(
-                        label=f"📥 Download Cleaned Workbook (preserve untouched formatting)",
+                        label=f"📥 Download Cleaned Workbook",
                         data=out.getvalue(),
                         file_name="malaria_cleaned_all.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -274,7 +274,7 @@ if ind_file is not None:
                         out.seek(0)
 
                         st.download_button(
-                            label=f"📥 Download Indicators Workbook (preserve untouched formatting)",
+                            label=f"📥 Download Indicators Workbook",
                             data=out.getvalue(),
                             file_name="malaria_indicators_all.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
