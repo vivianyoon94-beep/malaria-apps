@@ -7,6 +7,10 @@ import streamlit as st
 from Malaria_Data_Cleaning import clean_malaria_data
 from Malaria_Indicator import compute_indicators
 
+# --- new: openpyxl for preserving untouched sheets ---
+from openpyxl import load_workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
 # ---------------- Utilities ----------------
 def put_comment_first(df: pd.DataFrame) -> pd.DataFrame:
     return df if "COMMENT" not in df.columns else df[["COMMENT"] + [c for c in df.columns if c != "COMMENT"]]
@@ -109,7 +113,7 @@ if clean_file is not None:
             if not clean_selected:
                 st.warning("Select at least one sheet, then click **Run**.")
             else:
-                # Process selected sheets
+                # Process selected sheets to generate cleaned DataFrames
                 cleaned_by_sheet = {}
                 for sheet in clean_selected:
                     raw_df  = clean_xls.parse(sheet_name=sheet)
@@ -153,23 +157,39 @@ if clean_file is not None:
                                 st.markdown("**📊 Error Summary by Column**")
                                 st.dataframe(summary_df, use_container_width=True)
 
-                # Download workbook: include ALL sheets (selected cleaned, unselected untouched)
+                # --- Build downloadable workbook, preserving UNTOUCHED sheets via openpyxl ---
                 st.subheader("⬇️ Download")
                 try:
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                        for sheet in clean_xls.sheet_names:
-                            if sheet in cleaned_by_sheet:
-                                cleaned_by_sheet[sheet]["file"].to_excel(
-                                    writer, index=False, sheet_name=sanitize_sheet_name(sheet)
-                                )
-                            else:
-                                raw_df = clean_xls.parse(sheet_name=sheet)
-                                raw_df.to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
-                    buffer.seek(0)
+                    # Read original bytes and load workbook so untouched sheets keep styles/filters
+                    original_bytes = clean_file.getvalue() if hasattr(clean_file, "getvalue") else clean_file.read()
+                    wb = load_workbook(io.BytesIO(original_bytes))
+
+                    # For each selected/cleaned sheet: replace content (formatting will be new for these sheets)
+                    for sheet in clean_xls.sheet_names:
+                        if sheet in cleaned_by_sheet:
+                            # Remove existing sheet, insert a new plain sheet at the same position
+                            try:
+                                idx = wb.sheetnames.index(sheet)
+                            except ValueError:
+                                idx = len(wb.sheetnames)
+                            ws_old = wb[sheet] if sheet in wb.sheetnames else None
+                            if ws_old is not None:
+                                wb.remove(ws_old)
+                            ws = wb.create_sheet(title=sheet, index=idx)
+
+                            # Write DataFrame (header + rows)
+                            for r in dataframe_to_rows(cleaned_by_sheet[sheet]["file"], index=False, header=True):
+                                ws.append(r)
+                        # else: untouched sheet remains exactly as-is
+
+                    # Save to buffer
+                    out = io.BytesIO()
+                    wb.save(out)
+                    out.seek(0)
+
                     st.download_button(
-                        label=f"📥 Download Cleaned Workbook (all {len(clean_xls.sheet_names)} sheets)",
-                        data=buffer,
+                        label=f"📥 Download Cleaned Workbook (preserve untouched formatting)",
+                        data=out.getvalue(),
                         file_name="malaria_cleaned_all.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
@@ -227,22 +247,35 @@ if ind_file is not None:
                         with st.expander(f"Details: {sheet}"):
                             st.exception(e)
 
-                # Download workbook: include ALL sheets (selected processed, unselected untouched)
+                # --- Build downloadable workbook, preserving UNTOUCHED sheets via openpyxl ---
                 if outputs or ind_selected:
                     st.subheader("⬇️ Download")
                     try:
-                        buffer = io.BytesIO()
-                        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                            for sheet in ind_xls.sheet_names:
-                                if sheet in outputs:
-                                    outputs[sheet].to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
-                                else:
-                                    raw_df = ind_xls.parse(sheet_name=sheet)
-                                    raw_df.to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
-                        buffer.seek(0)
+                        original_bytes = ind_file.getvalue() if hasattr(ind_file, "getvalue") else ind_file.read()
+                        wb = load_workbook(io.BytesIO(original_bytes))
+
+                        for sheet in ind_xls.sheet_names:
+                            if sheet in outputs:
+                                try:
+                                    idx = wb.sheetnames.index(sheet)
+                                except ValueError:
+                                    idx = len(wb.sheetnames)
+                                ws_old = wb[sheet] if sheet in wb.sheetnames else None
+                                if ws_old is not None:
+                                    wb.remove(ws_old)
+                                ws = wb.create_sheet(title=sheet, index=idx)
+
+                                for r in dataframe_to_rows(outputs[sheet], index=False, header=True):
+                                    ws.append(r)
+                            # else: untouched sheet remains exactly as-is
+
+                        out = io.BytesIO()
+                        wb.save(out)
+                        out.seek(0)
+
                         st.download_button(
-                            label=f"📥 Download Indicators Workbook (all {len(ind_xls.sheet_names)} sheets)",
-                            data=buffer,
+                            label=f"📥 Download Indicators Workbook (preserve untouched formatting)",
+                            data=out.getvalue(),
                             file_name="malaria_indicators_all.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         )
