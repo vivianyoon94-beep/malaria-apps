@@ -1,3 +1,4 @@
+
 import io
 import pandas as pd
 import streamlit as st
@@ -108,6 +109,7 @@ if clean_file is not None:
             if not clean_selected:
                 st.warning("Select at least one sheet, then click **Run**.")
             else:
+                # Process selected sheets
                 cleaned_by_sheet = {}
                 for sheet in clean_selected:
                     raw_df  = clean_xls.parse(sheet_name=sheet)
@@ -151,19 +153,24 @@ if clean_file is not None:
                                 st.markdown("**📊 Error Summary by Column**")
                                 st.dataframe(summary_df, use_container_width=True)
 
+                # Download workbook: include ALL sheets (selected cleaned, unselected untouched)
                 st.subheader("⬇️ Download")
                 try:
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                        for sheet in clean_selected:
-                            cleaned_by_sheet[sheet]["file"].to_excel(
-                                writer, index=False, sheet_name=sanitize_sheet_name(sheet)
-                            )
+                        for sheet in clean_xls.sheet_names:
+                            if sheet in cleaned_by_sheet:
+                                cleaned_by_sheet[sheet]["file"].to_excel(
+                                    writer, index=False, sheet_name=sanitize_sheet_name(sheet)
+                                )
+                            else:
+                                raw_df = clean_xls.parse(sheet_name=sheet)
+                                raw_df.to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
                     buffer.seek(0)
                     st.download_button(
-                        label=f"📥 Download Cleaned Workbook ({len(clean_selected)} sheets)",
+                        label=f"📥 Download Cleaned Workbook (all {len(clean_xls.sheet_names)} sheets)",
                         data=buffer,
-                        file_name="malaria_cleaned_selected.xlsx",
+                        file_name="malaria_cleaned_all.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
                 except Exception as e:
@@ -220,18 +227,23 @@ if ind_file is not None:
                         with st.expander(f"Details: {sheet}"):
                             st.exception(e)
 
-                if outputs:
+                # Download workbook: include ALL sheets (selected processed, unselected untouched)
+                if outputs or ind_selected:
                     st.subheader("⬇️ Download")
                     try:
                         buffer = io.BytesIO()
                         with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                            for sheet, df_out in outputs.items():
-                                df_out.to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
+                            for sheet in ind_xls.sheet_names:
+                                if sheet in outputs:
+                                    outputs[sheet].to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
+                                else:
+                                    raw_df = ind_xls.parse(sheet_name=sheet)
+                                    raw_df.to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
                         buffer.seek(0)
                         st.download_button(
-                            label=f"📥 Download Indicators Workbook ({len(outputs)} sheet{'s' if len(outputs)>1 else ''})",
+                            label=f"📥 Download Indicators Workbook (all {len(ind_xls.sheet_names)} sheets)",
                             data=buffer,
-                            file_name="malaria_indicators_selected.xlsx",
+                            file_name="malaria_indicators_all.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         )
                     except Exception as e:
