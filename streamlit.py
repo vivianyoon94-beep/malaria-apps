@@ -89,6 +89,112 @@ def force_screening_date_strings(df: pd.DataFrame) -> pd.DataFrame:
 st.set_page_config(page_title="🦟 Malaria Apps", layout="wide")
 st.title("🦟 Malaria Apps")
 
+
+# --- Section 0: Sheet Merger ---
+st.header("Sheet Merger")
+
+merge_file = st.file_uploader("Upload an Excel file to merge sheets", type=["xlsx", "xls"], key="merge_uploader")
+
+def _normalize_headers(df: pd.DataFrame):
+    return [str(c).strip().lower() for c in df.columns]
+
+def _validate_headers_match(dfs):
+    base = set(_normalize_headers(dfs[0]))
+    for i, d in enumerate(dfs[1:], start=2):
+        if set(_normalize_headers(d)) != base:
+            return False, i
+    return True, None
+
+if merge_file is not None:
+    try:
+        merge_xls = pd.ExcelFile(merge_file)
+        merge_sheets_all = merge_xls.sheet_names
+    except Exception as e:
+        st.error("❌ Could not read the Excel file. Please check the format.")
+        st.exception(e)
+        merge_xls = None
+        merge_sheets_all = []
+
+    if merge_sheets_all:
+        merge_selected = multiselect_dropdown("Select sheet(s) to merge", merge_sheets_all, key="merge")
+        st.write("")
+        include_originals = st.checkbox("Include original sheets in output (preserve formatting where possible)", value=True)
+        run_merge = st.button("Run", key="run_merge")
+
+        if run_merge:
+            if not merge_selected or len(merge_selected) < 2:
+                st.warning("Select at least **two** sheets to merge, then click **Run**.")
+            else:
+                # Read selected sheets
+                sheet_dfs = []
+                for s in merge_selected:
+                    df = merge_xls.parse(sheet_name=s)
+                    df.columns = [str(c) for c in df.columns]  # ensure string col names
+                    sheet_dfs.append((s, df))
+
+                ok, bad_idx = _validate_headers_match([d for _, d in sheet_dfs])
+                if not ok:
+                    bad_name = merge_selected[bad_idx-1] if bad_idx and bad_idx-1 < len(merge_selected) else "Unknown"
+                    st.error(f"Headers do not match across selected sheets. Mismatch around sheet: **{bad_name}**")
+                else:
+                    # Canonical order based on first sheet
+                    canonical = list(sheet_dfs[0][1].columns)
+                    merged_parts = []
+                    for s, df in sheet_dfs:
+                        # reorder columns case-insensitively to match canonical
+                        mapping = {str(c).strip().lower(): c for c in df.columns}
+                        ordered = [mapping[str(c).strip().lower()] for c in canonical]
+                        tmp = df[ordered].copy()
+                        tmp["DATA_SOURCE"] = s
+                        merged_parts.append(tmp)
+                    merged_df = pd.concat(merged_parts, ignore_index=True)
+
+                    st.subheader("👀 Merged preview (first 50 rows)")
+                    st.dataframe(merged_df.head(50), use_container_width=True)
+
+                    # Download
+                    st.subheader("⬇️ Download")
+                    try:
+                        if include_originals and str(merge_file.name).lower().endswith(".xlsx"):
+                            # Use openpyxl to append merged sheet to original, preserving untouched formatting
+                            original_bytes = merge_file.getvalue() if hasattr(merge_file, "getvalue") else merge_file.read()
+                            wb = load_workbook(io.BytesIO(original_bytes))
+
+                            # ensure a unique sheet name
+                            base_name = "Merged"
+                            name = base_name
+                            counter = 1
+                            while name in wb.sheetnames:
+                                counter += 1
+                                name = f"{base_name}_{counter}"
+                            ws = wb.create_sheet(title=name)
+                            for r in dataframe_to_rows(merged_df, index=False, header=True):
+                                ws.append(r)
+                            out = io.BytesIO()
+                            wb.save(out); out.seek(0)
+                            st.download_button(
+                                label=f"📥 Download with original sheets + merged ('{name}')",
+                                data=out.getvalue(),
+                                file_name="merged_with_originals.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+                        else:
+                            # Only merged sheet in a fresh workbook
+                            out = io.BytesIO()
+                            with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+                                merged_df.to_excel(writer, index=False, sheet_name="Merged")
+                            out.seek(0)
+                            st.download_button(
+                                label="📥 Download merged-only workbook",
+                                data=out.getvalue(),
+                                file_name="merged_only.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+                    except Exception as e:
+                        st.error("❌ Failed to build the merged workbook.")
+                        st.exception(e)
+
+st.markdown("---")
 # --- Section 1: Data Cleaning ---
 st.header("Data Cleaning")
 
