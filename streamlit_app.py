@@ -37,8 +37,8 @@ def _strip_time_from_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ----------------- app -----------------
-st.set_page_config(page_title="🦟 Malaria Apps", layout="wide")
-st.title("🦟 Malaria Apps")
+st.set_page_config(page_title="🦟 Malaria App", layout="wide")
+st.title("🦟 Malaria App")
 
 # === Section 0: Sheet Merger (single or multiple files) ===
 st.header("Sheet Merger (single or multiple files)")
