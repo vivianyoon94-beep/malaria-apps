@@ -1,6 +1,7 @@
 import io
 import pandas as pd
 import streamlit as st
+from pathlib import Path
 
 from Malaria_Data_Cleaning import clean_malaria_data
 from Malaria_Indicator import compute_indicators
