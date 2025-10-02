@@ -183,7 +183,7 @@ if merge_files:
                 st.download_button(
                     label="📦 Download ZIP (each original + merged sheet)",
                     data=zipbuf.getvalue(),
-                    file_name="merged_injected_bundle.zip",
+                    file_name="merged_original.zip",
                     mime="application/zip",
                 )
 
