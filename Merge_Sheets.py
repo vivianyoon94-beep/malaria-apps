@@ -1,14 +1,14 @@
 import argparse
 import io
 import os
-import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
-# Optional import for preserving formatting when injecting into .xlsx
+# Optional import for building/formatting a single combined workbook
 try:
+    from openpyxl import Workbook
     from openpyxl import load_workbook
     from openpyxl.utils.dataframe import dataframe_to_rows
     _HAVE_OPENPYXL = True
@@ -35,6 +35,13 @@ def _validate_headers_match(dfs: List[pd.DataFrame]) -> None:
             raise ValueError(
                 f"Headers do not match across all selected sheets (mismatch near input #{i})."
             )
+
+def _sanitize_sheet_name(name: str) -> str:
+    # Excel sheet name: <=31 chars, no []:*?/\
+    bad = '[]:*?/\\'
+    trans = {ord(ch): ' ' for ch in bad}
+    name = (str(name) or "Sheet").translate(trans).strip()
+    return name[:31] if name else "Sheet"
 
 
 # ---------- core ----------
@@ -81,71 +88,62 @@ def write_merged_only(path: str, merged_df: pd.DataFrame, sheet_name: str = "Mer
         merged_df.to_excel(writer, index=False, sheet_name=sheet_name)
 
 
-def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.DataFrame, zip_path: str) -> None:
-    """Create a ZIP where each original .xlsx gets a merged sheet appended, preserving formatting.
-       For .xls inputs, include a new .xlsx containing only the merged sheet.
+def write_combined_workbook(
+    file_sheet_map: Dict[str, Iterable[str]],
+    merged_df: pd.DataFrame,
+    out_path: str,
+) -> None:
+    """
+    Create a single Excel workbook containing:
+      - 'Merged' (first sheet, date-formatted as DD-MMM-YY)
+      - all selected original sheets appended after, sheet names prefixed with '<file>-<sheet>'
+    Note: original styles/filters can’t be preserved when consolidating into a new workbook.
     """
     if not _HAVE_OPENPYXL:
-        raise RuntimeError(
-            "openpyxl not available; cannot preserve formatting for .xlsx. Add 'openpyxl' to requirements."
-        )
+        raise RuntimeError("openpyxl not available; add 'openpyxl' to requirements.")
 
     from datetime import date as _dt_date
 
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for src_path in file_sheet_map.keys():
-            fname = os.path.basename(src_path)
+    wb = Workbook()
+    # Remove the default sheet
+    default = wb.active
+    wb.remove(default)
 
-            if fname.lower().endswith(".xlsx"):
-                with open(src_path, "rb") as f:
-                    orig_bytes = f.read()
+    # 1) Add merged as the first sheet
+    ws_m = wb.create_sheet(title="Merged", index=0)
+    for r in dataframe_to_rows(merged_df, index=False, header=True):
+        ws_m.append(r)
 
-                wb = load_workbook(io.BytesIO(orig_bytes))
+    # format date columns in merged
+    date_cols_idx = []
+    for j, col in enumerate(merged_df.columns, start=1):
+        col_s = merged_df[col]
+        if pd.api.types.is_datetime64_any_dtype(col_s) or col_s.map(lambda v: isinstance(v, (_dt_date, pd.Timestamp))).any():
+            date_cols_idx.append(j)
+    for j in date_cols_idx:
+        for col_cells in ws_m.iter_cols(min_col=j, max_col=j, min_row=2):
+            for cell in col_cells:
+                cell.number_format = "DD-MMM-YY"
 
-                # Unique sheet name and put the merged sheet FIRST
-                base_name = "Merged"
-                name = base_name
-                counter = 1
-                while name in wb.sheetnames:
-                    counter += 1
-                    name = f"{base_name}_{counter}"
-                ws = wb.create_sheet(title=name, index=0)
+    # 2) Append all selected original sheets (values only)
+    for fpath, sheets in file_sheet_map.items():
+        file_base = Path(fpath).stem
+        xls = pd.ExcelFile(fpath)
+        for s in sheets:
+            df = xls.parse(sheet_name=s)
+            # Keep column order and values
+            title = _sanitize_sheet_name(f"{file_base} - {s}")
+            # Ensure uniqueness if collision
+            orig_title = title
+            k = 2
+            while title in wb.sheetnames:
+                title = _sanitize_sheet_name(f"{orig_title[:28]}_{k}")
+                k += 1
+            ws = wb.create_sheet(title=title)
+            for r in dataframe_to_rows(df, index=False, header=True):
+                ws.append(r)
 
-                # Write header + rows
-                for r in dataframe_to_rows(merged_df, index=False, header=True):
-                    ws.append(r)
-
-                # Excel date display format for true date/datetime columns
-                date_cols_idx = []
-                for j, col in enumerate(merged_df.columns, start=1):
-                    col_series = merged_df[col]
-                    if pd.api.types.is_datetime64_any_dtype(col_series) or col_series.map(
-                        lambda v: isinstance(v, (_dt_date, pd.Timestamp))
-                    ).any():
-                        date_cols_idx.append(j)
-                for j in date_cols_idx:
-                    for col_cells in ws.iter_cols(min_col=j, max_col=j, min_row=2):
-                        for cell in col_cells:
-                            cell.number_format = "DD-MMM-YY"
-
-                out = io.BytesIO()
-                wb.save(out)
-                out.seek(0)
-                zf.writestr(fname, out.read())
-
-            else:
-                # .xls fallback: cannot preserve original formatting; deliver an xlsx with merged-only
-                alt_name = os.path.splitext(fname)[0] + "_merged_only.xlsx"
-                bout = io.BytesIO()
-                with pd.ExcelWriter(
-                    bout,
-                    engine="xlsxwriter",
-                    datetime_format="dd-mmm-yy",
-                    date_format="dd-mmm-yy",
-                ) as writer:
-                    merged_df.to_excel(writer, index=False, sheet_name="Merged")
-                bout.seek(0)
-                zf.writestr(alt_name, bout.read())
+    wb.save(out_path)
 
 
 # ---------- CLI ----------
@@ -182,20 +180,22 @@ def parse_select_args(select_args: List[str], files: List[str]) -> Dict[str, Lis
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Merge sheets across one or more Excel files.")
     ap.add_argument("files", nargs="+", help="Paths to input Excel files (.xlsx or .xls)")
-    ap.add_argument("-o", "--output", default="merged.xlsx", help="Path to merged-only workbook to write")
-    ap.add_argument("--zip", dest="zip_path", help="Create a ZIP that injects the merged sheet back into each original file")
+    ap.add_argument("-o", "--output", default="merged.xlsx", help="Path to merged-only workbook")
+    ap.add_argument("--combined", help="Write one Excel that contains 'Merged' first + all selected original sheets")
     ap.add_argument("--select", action="append", help="Select sheets per file: 'file.xlsx:Sheet1,Sheet2' (repeatable)")
     args = ap.parse_args(argv)
 
     file_sheet_map = parse_select_args(args.select or [], args.files)
     merged_df = merge_across_files(file_sheet_map)
 
+    # 1) merged-only workbook
     write_merged_only(args.output, merged_df)
     print(f"✅ Wrote merged-only workbook: {args.output}")
 
-    if args.zip_path:
-        write_zip_injected(file_sheet_map, merged_df, args.zip_path)
-        print(f"📦 Wrote ZIP bundle with injected merged sheets: {args.zip_path}")
+    # 2) single combined workbook (optional)
+    if args.combined:
+        write_combined_workbook(file_sheet_map, merged_df, args.combined)
+        print(f"📘 Wrote combined workbook (Merged + originals): {args.combined}")
 
     return 0
 
