@@ -1,7 +1,6 @@
 import argparse
 import io
 import os
-import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -20,6 +19,7 @@ except Exception:  # pragma: no cover
 def _normalize_headers(df: pd.DataFrame) -> List[str]:
     return [str(c).strip().lower() for c in df.columns]
 
+
 def _validate_headers_match(dfs: List[pd.DataFrame]) -> None:
     if not dfs:
         raise ValueError("No dataframes selected")
@@ -29,27 +29,6 @@ def _validate_headers_match(dfs: List[pd.DataFrame]) -> None:
             raise ValueError(
                 f"Headers do not match across all selected sheets (mismatch near input #{i})."
             )
-
-def _freeze_date_text(df: pd.DataFrame, col_name: str = "SCREENING_DATE") -> pd.DataFrame:
-    """
-    Keep EXACT user text for SCREENING_DATE:
-      - if the cell is already a string -> keep as-is
-      - if it's a real datetime/date -> convert to 'DD-MMM-YY' STRING
-    We do NOT validate the format here; cleaning will do that later.
-    """
-    # case-insensitive column find
-    cmap = {c.lower(): c for c in df.columns}
-    col = cmap.get(col_name.lower())
-    if not col:
-        return df
-    def _as_text(v):
-        import datetime as _dt
-        import pandas as _pd
-        if isinstance(v, (pd.Timestamp, _dt.datetime, _dt.date)):
-            return pd.to_datetime(v).strftime("%d-%b-%y")
-        return v  # keep strings like "12.2.25" or anything else as-is
-    df[col] = df[col].map(_as_text)
-    return df
 
 
 # ---------- core ----------
@@ -63,12 +42,10 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
         xls = pd.ExcelFile(fname)
         for s in sheets:
             df = xls.parse(sheet_name=s)
-            # strip headers to avoid 'SCREENING_DATE ' / invisible-space issues
+            # strip headers to avoid 'SCREENING_DATE ' / zero-width space issues
             df.columns = [str(c).strip() for c in df.columns]
 
-            # IMPORTANT: do NOT freeze/format dates here; leave exactly as read
-            # (strings stay strings; Excel dates stay pd.Timestamp)
-
+            # Do NOT coerce/format dates here; leave exactly as read
             df["DATA_SOURCE"] = s
             df["FILE_SOURCE"] = Path(fname).name
             parts.append(df)
@@ -78,13 +55,9 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
 
     _validate_headers_match(parts)
 
+    # Keep first sheet's column order; ensure meta columns are last
     meta_cols = {"DATA_SOURCE", "FILE_SOURCE"}
-    canonical = [c for c in parts[0]].copy()
-    # Keep first sheet's column order; just ensure meta columns are last & present
-    for m in ("DATA_SOURCE", "FILE_SOURCE"):
-        if m in canonical:
-            canonical.remove(m)
-    canonical += ["DATA_SOURCE", "FILE_SOURCE"]
+    canonical = [c for c in parts[0].columns if c not in meta_cols] + ["DATA_SOURCE", "FILE_SOURCE"]
 
     normalized = []
     for df in parts:
@@ -113,21 +86,21 @@ def write_merged_only(path: str, merged_df: pd.DataFrame, sheet_name: str = "Mer
                 if str(c).strip().lower() == "screening_date"
             )
             date_fmt = writer.book.add_format({"num_format": "DD-MMM-YY"})
-            # width ~ 12 chars looks nice; adjust if you prefer
             ws.set_column(date_col_idx, date_col_idx, 12, date_fmt)
         except StopIteration:
             pass
 
+
 def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.DataFrame, zip_path: str) -> None:
-    """
-    Create a ZIP where each original .xlsx gets the merged sheet appended as FIRST tab.
-    We write values "as-is" (strings), no date number formats applied.
+    """(Kept for compatibility) — Create a ZIP where each original .xlsx gets a merged sheet appended, preserving formatting.
+       For .xls inputs, include a new .xlsx containing only the merged sheet.
     """
     if not _HAVE_OPENPYXL:
         raise RuntimeError(
             "openpyxl not available; cannot preserve formatting for .xlsx. Add 'openpyxl' to requirements."
         )
 
+    import zipfile
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for src_path in file_sheet_map.keys():
             fname = os.path.basename(src_path)
@@ -137,6 +110,8 @@ def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.D
                     orig_bytes = f.read()
 
                 wb = load_workbook(io.BytesIO(orig_bytes))
+
+                # Unique sheet name and put the merged sheet FIRST
                 base_name = "Merged"
                 name = base_name
                 counter = 1
@@ -145,17 +120,18 @@ def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.D
                     name = f"{base_name}_{counter}"
                 ws = wb.create_sheet(title=name, index=0)
 
+                # Write header + rows
                 for r in dataframe_to_rows(merged_df, index=False, header=True):
                     ws.append(r)
-                # Make the whole SCREENING_DATE column display as DD-MMM-YY (text values stay as text)
+
+                # Make SCREENING_DATE display as DD-MMM-YY for true date cells
                 try:
                     date_col_idx = next(
                         i for i, c in enumerate(merged_df.columns, start=1)
                         if str(c).strip().lower() == "screening_date"
                     )
-                    for row_idx in range(2, len(merged_df) + 2):  # skip header row
+                    for row_idx in range(2, len(merged_df) + 2):  # skip header
                         cell = ws.cell(row=row_idx, column=date_col_idx)
-                        # Only affects true date/datetime cells; text cells remain unchanged
                         cell.number_format = "DD-MMM-YY"
                 except StopIteration:
                     pass
@@ -166,17 +142,32 @@ def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.D
                 zf.writestr(fname, out.read())
 
             else:
-                # .xls fallback: provide new xlsx with merged-only (values as text)
+                # .xls fallback: cannot preserve original formatting; deliver an xlsx with merged-only
                 alt_name = os.path.splitext(fname)[0] + "_merged_only.xlsx"
                 bout = io.BytesIO()
                 with pd.ExcelWriter(bout, engine="xlsxwriter") as writer:
                     merged_df.to_excel(writer, index=False, sheet_name="Merged")
+                    # Display format for true date cells
+                    ws = writer.sheets["Merged"]
+                    try:
+                        idx = next(
+                            i for i, c in enumerate(merged_df.columns)
+                            if str(c).strip().lower() == "screening_date"
+                        )
+                        date_fmt = writer.book.add_format({"num_format": "DD-MMM-YY"})
+                        ws.set_column(idx, idx, 12, date_fmt)
+                    except StopIteration:
+                        pass
                 bout.seek(0)
                 zf.writestr(alt_name, bout.read())
 
 
 # ---------- CLI ----------
 def parse_select_args(select_args: List[str], files: List[str]) -> Dict[str, List[str]]:
+    """Parse selections of the form:
+       --select "file1.xlsx:SheetA,SheetB"  --select "file2.xlsx:Data"
+       If no --select provided, default to all sheets for each file.
+    """
     mapping: Dict[str, List[str]] = {}
     if not select_args:
         for f in files:
@@ -205,7 +196,7 @@ def parse_select_args(select_args: List[str], files: List[str]) -> Dict[str, Lis
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Merge sheets across one or more Excel files.")
     ap.add_argument("files", nargs="+", help="Paths to input Excel files (.xlsx or .xls)")
-    ap.add_argument("-o", "--output", default="merged.xlsx", help="Path to merged-only workbook")
+    ap.add_argument("-o", "--output", default="merged.xlsx", help="Path to merged-only workbook to write")
     ap.add_argument("--zip", dest="zip_path", help="Create a ZIP that injects the merged sheet back into each original file")
     ap.add_argument("--select", action="append", help="Select sheets per file: 'file.xlsx:Sheet1,Sheet2' (repeatable)")
     args = ap.parse_args(argv)
