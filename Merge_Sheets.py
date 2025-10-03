@@ -99,12 +99,24 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
 
 def write_merged_only(path: str, merged_df: pd.DataFrame, sheet_name: str = "Merged") -> None:
     """
-    Write merged-only workbook. We DO NOT apply any Excel date formatting here,
-    because we want to keep the exact text that now lives in the DataFrame.
+    Write merged-only workbook. Keep values as-is, but make real date cells
+    display as DD-MMM-YY (e.g., 01-Jan-26) instead of 2026-01-01 00:00:00.
     """
     with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
         merged_df.to_excel(writer, index=False, sheet_name=sheet_name)
 
+        # Apply date column format for display (text values are unaffected)
+        ws = writer.sheets[sheet_name]
+        try:
+            date_col_idx = next(
+                i for i, c in enumerate(merged_df.columns)
+                if str(c).strip().lower() == "screening_date"
+            )
+            date_fmt = writer.book.add_format({"num_format": "DD-MMM-YY"})
+            # width ~ 12 chars looks nice; adjust if you prefer
+            ws.set_column(date_col_idx, date_col_idx, 12, date_fmt)
+        except StopIteration:
+            pass
 
 def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.DataFrame, zip_path: str) -> None:
     """
@@ -135,6 +147,18 @@ def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.D
 
                 for r in dataframe_to_rows(merged_df, index=False, header=True):
                     ws.append(r)
+                # Make the whole SCREENING_DATE column display as DD-MMM-YY (text values stay as text)
+                try:
+                    date_col_idx = next(
+                        i for i, c in enumerate(merged_df.columns, start=1)
+                        if str(c).strip().lower() == "screening_date"
+                    )
+                    for row_idx in range(2, len(merged_df) + 2):  # skip header row
+                        cell = ws.cell(row=row_idx, column=date_col_idx)
+                        # Only affects true date/datetime cells; text cells remain unchanged
+                        cell.number_format = "DD-MMM-YY"
+                except StopIteration:
+                    pass
 
                 out = io.BytesIO()
                 wb.save(out)
