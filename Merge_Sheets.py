@@ -56,17 +56,19 @@ def _freeze_date_text(df: pd.DataFrame, col_name: str = "SCREENING_DATE") -> pd.
 def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame:
     """
     Merge rows across multiple files/sheets. Adds DATA_SOURCE and FILE_SOURCE.
-
-    RULE: Do not change user-entered text. Only convert real date objects to their
-    visible text 'DD-MMM-YY'; leave strings untouched.
+    APPEND-ONLY: do not touch values; keep strings as-is and keep real Excel dates as Timestamps.
     """
     parts: List[pd.DataFrame] = []
     for fname, sheets in file_sheet_map.items():
         xls = pd.ExcelFile(fname)
         for s in sheets:
-            df = xls.parse(sheet_name=s)  # keep native types
-            df.columns = [str(c) for c in df.columns]
-            df = _freeze_date_text(df, "SCREENING_DATE")
+            df = xls.parse(sheet_name=s)
+            # strip headers to avoid 'SCREENING_DATE ' / invisible-space issues
+            df.columns = [str(c).strip() for c in df.columns]
+
+            # IMPORTANT: do NOT freeze/format dates here; leave exactly as read
+            # (strings stay strings; Excel dates stay pd.Timestamp)
+
             df["DATA_SOURCE"] = s
             df["FILE_SOURCE"] = Path(fname).name
             parts.append(df)
@@ -77,13 +79,18 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
     _validate_headers_match(parts)
 
     meta_cols = {"DATA_SOURCE", "FILE_SOURCE"}
-    canonical = [c for c in parts[0].columns if c not in meta_cols]
+    canonical = [c for c in parts[0]].copy()
+    # Keep first sheet's column order; just ensure meta columns are last & present
+    for m in ("DATA_SOURCE", "FILE_SOURCE"):
+        if m in canonical:
+            canonical.remove(m)
+    canonical += ["DATA_SOURCE", "FILE_SOURCE"]
 
     normalized = []
     for df in parts:
         mapping = {str(c).strip().lower(): c for c in df.columns}
-        ordered = [mapping[str(c).strip().lower()] for c in canonical]
-        tmp = df[ordered + ["DATA_SOURCE", "FILE_SOURCE"]].copy()
+        ordered = [mapping[str(c).strip().lower()] for c in canonical if str(c).strip().lower() in mapping]
+        tmp = df[ordered].copy()
         normalized.append(tmp)
 
     merged = pd.concat(normalized, ignore_index=True)
