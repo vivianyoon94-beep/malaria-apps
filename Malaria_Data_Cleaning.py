@@ -97,7 +97,7 @@ def clean_malaria_data(df):
                 for fmt in strict_formats:
                     try:
                         parsed = datetime.strptime(s, fmt)
-                        if 2024 < parsed.year < 2100:
+                        if 2024 <= parsed.year < 2100:
                             valid = True
                             break
                     except Exception:
