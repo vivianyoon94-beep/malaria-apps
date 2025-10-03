@@ -1,5 +1,4 @@
 import io
-import zipfile
 import pandas as pd
 import streamlit as st
 
@@ -38,29 +37,9 @@ def _df_display_without_time(df: pd.DataFrame) -> pd.DataFrame:
             out[col] = pd.to_datetime(out[col], errors="coerce").dt.strftime("%d-%b-%y")
     return out
 
-def _freeze_date_text(df: pd.DataFrame, col_name: str = "SCREENING_DATE") -> pd.DataFrame:
-    """
-    Keep user-entered date text exactly as typed.
-    If a cell is a real date/datetime (Timestamp), convert it to a TEXT 'DD-MMM-YY'.
-    If the cell is already text (e.g., '03-Oct-24' or '08.4.25'), leave it untouched.
-    """
-    cmap = {c.lower(): c for c in df.columns}
-    col = cmap.get(col_name.lower())
-    if not col:
-        return df
-
-    from datetime import date as _dt_date, datetime as _dt_datetime
-    def _as_text(v):
-        if isinstance(v, (pd.Timestamp, _dt_date, _dt_datetime)):
-            return pd.to_datetime(v).strftime("%d-%b-%y")
-        return v  # keep strings as-is
-
-    df[col] = df[col].map(_as_text)
-    return df
-
 # ----------------- app -----------------
-st.set_page_config(page_title="🦟 Malaria Application", layout="wide")
-st.title("🦟 Malaria Application")
+st.set_page_config(page_title="🦟 Malaria Apps", layout="wide")
+st.title("🦟 Malaria Apps")
 
 # === Section 0: Sheet Merger (single or multiple files) ===
 st.header("Sheet Merger (single or multiple files)")
@@ -104,16 +83,13 @@ if merge_files:
                 continue
             for s in chosen:
                 df = xls.parse(sheet_name=s)
-                # strip headers to avoid 'SCREENING_DATE ' / invisible-space issues
+                # strip headers to avoid 'SCREENING_DATE ' / zero-width space issues
                 df.columns = [str(c).strip() for c in df.columns]
 
                 # APPEND-ONLY: do not coerce dates; leave exactly as read
-                # (strings stay strings; Excel dates stay pd.Timestamp)
-
                 df["DATA_SOURCE"] = s
                 df["FILE_SOURCE"] = fname
                 parts.append(df)
-
 
         if not parts:
             st.warning("Please select at least one sheet to merge.")
@@ -138,12 +114,10 @@ if merge_files:
 
                 st.subheader("⬇️ Download")
 
-                # 1) merged-only workbook (write values as-is; no excel date formats)
+                # 1) merged-only workbook (values as-is; format date column for display)
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
                     merged_df.to_excel(writer, index=False, sheet_name="Merged")
-
-                    # Format SCREENING_DATE column for display (keeps strings as-is)
                     ws = writer.sheets["Merged"]
                     try:
                         idx = next(
@@ -162,59 +136,58 @@ if merge_files:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
-                # 2) ZIP with original files + merged sheet (first tab), values as-is
-                zipbuf = io.BytesIO()
-                with zipfile.ZipFile(zipbuf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    for f, xls in file_objs:
-                        fname = f.name
-                        if fname.lower().endswith(".xlsx"):
-                            orig_bytes = f.getvalue() if hasattr(f, "getvalue") else f.read()
-                            wb = load_workbook(io.BytesIO(orig_bytes))
-
-                            base_name = "Merged"
-                            name = base_name
-                            counter = 1
-                            while name in wb.sheetnames:
-                                counter += 1
-                                name = f"{base_name}_{counter}"
-                            ws = wb.create_sheet(title=name, index=0)
-
-                            for r in dataframe_to_rows(merged_df, index=False, header=True):
-                                ws.append(r)
-                            # Display real dates as DD-MMM-YY; text remains untouched
-                            try:
-                                date_col = next(
-                                    i for i, c in enumerate(merged_df.columns, start=1)
-                                    if str(c).strip().lower() == "screening_date"
-                                )
-                                for row_idx in range(2, len(merged_df) + 2):  # skip header
-                                    cell = ws.cell(row=row_idx, column=date_col)
-                                    cell.number_format = "DD-MMM-YY"
-                            except StopIteration:
-                                pass
-
-                            fout = io.BytesIO()
-                            wb.save(fout); fout.seek(0)
-                            zf.writestr(fname, fout.read())
-                        else:
-                            # .xls fallback: new xlsx with merged-only (values as-is)
-                            alt_name = fname.rsplit(".", 1)[0] + "_merged_only.xlsx"
-                            bout = io.BytesIO()
-                            with pd.ExcelWriter(bout, engine="xlsxwriter") as writer:
-                                merged_df.to_excel(writer, index=False, sheet_name="Merged")
-                            bout.seek(0)
-                            zf.writestr(alt_name, bout.read())
-
-                zipbuf.seek(0)
-                st.download_button(
-                    label="📦 Download ZIP (each original + merged sheet)",
-                    data=zipbuf.getvalue(),
-                    file_name="merged_&_original.zip",
-                    mime="application/zip",
+                # 2) Single combined workbook (Merged + originals) — only when exactly one .xlsx uploaded
+                can_make_combined = (
+                    len(file_objs) == 1 and file_objs[0][0].name.lower().endswith(".xlsx") and file_objs[0][1] is not None
                 )
+                if can_make_combined:
+                    base_file, _ = file_objs[0]
+                    try:
+                        orig_bytes = base_file.getvalue() if hasattr(base_file, "getvalue") else base_file.read()
+                        wb = load_workbook(io.BytesIO(orig_bytes))
 
-                if any(f.name.lower().endswith(".xls") for f, _ in file_objs):
-                    st.info("For .xls files, original formatting cannot be preserved; those are provided as new .xlsx files with the merged sheet.")
+                        # Create unique name and insert merged sheet at index 0
+                        base_name = "Merged"
+                        name = base_name
+                        counter = 1
+                        while name in wb.sheetnames:
+                            counter += 1
+                            name = f"{base_name}_{counter}"
+                        ws = wb.create_sheet(title=name, index=0)
+
+                        # Write header + rows as-is
+                        for r in dataframe_to_rows(merged_df, index=False, header=True):
+                            ws.append(r)
+
+                        # Format SCREENING_DATE column for real dates (text stays as-is)
+                        try:
+                            date_col = next(
+                                i for i, c in enumerate(merged_df.columns, start=1)
+                                if str(c).strip().lower() == "screening_date"
+                            )
+                            for row_idx in range(2, len(merged_df) + 2):  # skip header
+                                cell = ws.cell(row=row_idx, column=date_col)
+                                cell.number_format = "DD-MMM-YY"
+                        except StopIteration:
+                            pass
+
+                        combo = io.BytesIO()
+                        wb.save(combo); combo.seek(0)
+                        st.download_button(
+                            label="📘 Download Combined Workbook (Merged + originals)",
+                            data=combo.getvalue(),
+                            file_name="merged_plus_originals.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                    except Exception as e:
+                        st.error("❌ Failed to build the combined workbook.")
+                        st.exception(e)
+                else:
+                    st.info(
+                        "To get a **single** workbook containing **Merged + all original sheets (unchanged)**, "
+                        "please upload **exactly one .xlsx** file. Excel does not allow copying styled sheets "
+                        "from multiple different workbooks into one file without losing formatting."
+                    )
 
 st.markdown("---")
 
