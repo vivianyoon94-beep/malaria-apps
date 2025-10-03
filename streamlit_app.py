@@ -104,14 +104,16 @@ if merge_files:
                 continue
             for s in chosen:
                 df = xls.parse(sheet_name=s)
-                df.columns = [str(c) for c in df.columns]
+                # strip headers to avoid 'SCREENING_DATE ' / invisible-space issues
+                df.columns = [str(c).strip() for c in df.columns]
 
-                # --- append-only rule: keep strings as-is; freeze real dates to DD-MMM-YY TEXT
-                df = _freeze_date_text(df, "SCREENING_DATE")
+                # APPEND-ONLY: do not coerce dates; leave exactly as read
+                # (strings stay strings; Excel dates stay pd.Timestamp)
 
                 df["DATA_SOURCE"] = s
                 df["FILE_SOURCE"] = fname
                 parts.append(df)
+
 
         if not parts:
             st.warning("Please select at least one sheet to merge.")
