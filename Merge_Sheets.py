@@ -17,12 +17,6 @@ except Exception:  # pragma: no cover
 
 
 # ---------- helpers ----------
-def _strip_time_from_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
-    for col, dtype in df.dtypes.items():
-        if str(dtype).startswith("datetime64"):
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
-    return df
-
 def _normalize_headers(df: pd.DataFrame) -> List[str]:
     return [str(c).strip().lower() for c in df.columns]
 
@@ -36,6 +30,64 @@ def _validate_headers_match(dfs: List[pd.DataFrame]) -> None:
                 f"Headers do not match across all selected sheets (mismatch near input #{i})."
             )
 
+def _normalize_screening_date_like_cleaning(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replicates the SCREENING_DATE normalization from the cleaner:
+    - Accepts only strict formats (no permissive fallback)
+    - Leaves invalid/unparsable cells unchanged
+    - Converts valid dates to string 'DD-MMM-YY'
+    This mirrors the logic used in Malaria_Data_Cleaning.clean_malaria_data. :contentReference[oaicite:0]{index=0}
+    """
+    from datetime import datetime as _dt
+
+    # case-insensitive lookup
+    col_map = {c.lower(): c for c in df.columns}
+    date_col = col_map.get('screening_date')
+    if not date_col:
+        return df
+
+    start_date = pd.to_datetime('2024-01-01')
+    today      = pd.to_datetime(pd.Timestamp.today().strftime('%Y-%m-%d'))
+
+    strict_formats = [
+        '%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d',
+        '%m/%d/%Y', '%m-%d-%Y', '%d/%m/%Y', '%d-%m-%Y',
+        '%m/%d/%y', '%m-%d-%y', '%d/%m/%y', '%d-%m-%y'
+    ]  # same idea as the cleaner’s strict list. :contentReference[oaicite:1]{index=1}
+
+    for idx, val in df[date_col].items():
+        if pd.isna(val) or str(val).strip() == '':
+            continue
+
+        valid, parsed = False, None
+
+        # Already a Timestamp from Excel
+        if isinstance(val, pd.Timestamp):
+            parsed, valid = val, True
+        else:
+            s = str(val).strip()
+            for fmt in strict_formats:
+                try:
+                    parsed = _dt.strptime(s, fmt)
+                    if 2024 < parsed.year < 2100:
+                        valid = True
+                        break
+                except Exception:
+                    continue
+
+        if not valid:
+            # keep original cell (merge step should not inject comments)
+            continue
+
+        # range check (same policy; keep original if outside)
+        if not (start_date <= pd.to_datetime(parsed) <= today):
+            continue
+
+        # normalize to 'DD-MMM-YY'
+        df.at[idx, date_col] = pd.to_datetime(parsed).strftime('%d-%b-%y')
+
+    return df
+
 
 # ---------- core ----------
 def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame:
@@ -46,6 +98,8 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
         for s in sheets:
             df = xls.parse(sheet_name=s)
             df.columns = [str(c) for c in df.columns]
+            # Normalize date like in the cleaner so downstream cleaning keeps the same format
+            df = _normalize_screening_date_like_cleaning(df)  # <-- new
             df["DATA_SOURCE"] = s
             df["FILE_SOURCE"] = Path(fname).name
             parts.append(df)
@@ -65,13 +119,13 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
         tmp = df[ordered + ["DATA_SOURCE", "FILE_SOURCE"]].copy()
         normalized.append(tmp)
 
+    # Concatenate without coercing datetime to .dt.date (we now normalized as strings)
     merged = pd.concat(normalized, ignore_index=True)
-    merged = _strip_time_from_datetime_columns(merged)
     return merged
 
 
 def write_merged_only(path: str, merged_df: pd.DataFrame, sheet_name: str = "Merged") -> None:
-    # Use XlsxWriter so Excel displays dates as DD-MMM-YY
+    # Using XlsxWriter gives nice display for any remaining real date cells
     with pd.ExcelWriter(
         path,
         engine="xlsxwriter",
@@ -115,7 +169,7 @@ def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.D
                 for r in dataframe_to_rows(merged_df, index=False, header=True):
                     ws.append(r)
 
-                # Excel date display format for true date/datetime columns
+                # Excel display format for TRUE date/datetime cells (if any remain)
                 date_cols_idx = []
                 for j, col in enumerate(merged_df.columns, start=1):
                     col_series = merged_df[col]
