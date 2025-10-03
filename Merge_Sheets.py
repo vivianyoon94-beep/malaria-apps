@@ -1,6 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import argparse
 import io
 import os
+import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -18,7 +22,6 @@ except Exception:  # pragma: no cover
 # ---------- helpers ----------
 def _normalize_headers(df: pd.DataFrame) -> List[str]:
     return [str(c).strip().lower() for c in df.columns]
-
 
 def _validate_headers_match(dfs: List[pd.DataFrame]) -> None:
     if not dfs:
@@ -42,10 +45,11 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
         xls = pd.ExcelFile(fname)
         for s in sheets:
             df = xls.parse(sheet_name=s)
-            # strip headers to avoid 'SCREENING_DATE ' / zero-width space issues
+            # strip headers to avoid 'SCREENING_DATE ' / invisible-space issues
             df.columns = [str(c).strip() for c in df.columns]
 
-            # Do NOT coerce/format dates here; leave exactly as read
+            # Do NOT coerce/format dates here; leave exactly as read.
+
             df["DATA_SOURCE"] = s
             df["FILE_SOURCE"] = Path(fname).name
             parts.append(df)
@@ -55,9 +59,12 @@ def merge_across_files(file_sheet_map: Dict[str, Iterable[str]]) -> pd.DataFrame
 
     _validate_headers_match(parts)
 
-    # Keep first sheet's column order; ensure meta columns are last
-    meta_cols = {"DATA_SOURCE", "FILE_SOURCE"}
-    canonical = [c for c in parts[0].columns if c not in meta_cols] + ["DATA_SOURCE", "FILE_SOURCE"]
+    # Keep first part's column order; ensure meta columns at the end
+    canonical = list(parts[0].columns)
+    for m in ("DATA_SOURCE", "FILE_SOURCE"):
+        if m in canonical:
+            canonical.remove(m)
+    canonical += ["DATA_SOURCE", "FILE_SOURCE"]
 
     normalized = []
     for df in parts:
@@ -92,15 +99,16 @@ def write_merged_only(path: str, merged_df: pd.DataFrame, sheet_name: str = "Mer
 
 
 def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.DataFrame, zip_path: str) -> None:
-    """(Kept for compatibility) — Create a ZIP where each original .xlsx gets a merged sheet appended, preserving formatting.
-       For .xls inputs, include a new .xlsx containing only the merged sheet.
+    """
+    Create a ZIP where each original .xlsx gets a merged sheet appended (as first tab),
+    preserving original formatting. For .xls inputs, include a new .xlsx containing
+    only the merged sheet (values as-is, with date display format applied).
     """
     if not _HAVE_OPENPYXL:
         raise RuntimeError(
             "openpyxl not available; cannot preserve formatting for .xlsx. Add 'openpyxl' to requirements."
         )
 
-    import zipfile
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for src_path in file_sheet_map.keys():
             fname = os.path.basename(src_path)
@@ -121,10 +129,11 @@ def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.D
                 ws = wb.create_sheet(title=name, index=0)
 
                 # Write header + rows
+                from openpyxl.utils.dataframe import dataframe_to_rows
                 for r in dataframe_to_rows(merged_df, index=False, header=True):
                     ws.append(r)
 
-                # Make SCREENING_DATE display as DD-MMM-YY for true date cells
+                # Apply display format to the real-date cells only
                 try:
                     date_col_idx = next(
                         i for i, c in enumerate(merged_df.columns, start=1)
@@ -147,7 +156,6 @@ def write_zip_injected(file_sheet_map: Dict[str, Iterable[str]], merged_df: pd.D
                 bout = io.BytesIO()
                 with pd.ExcelWriter(bout, engine="xlsxwriter") as writer:
                     merged_df.to_excel(writer, index=False, sheet_name="Merged")
-                    # Display format for true date cells
                     ws = writer.sheets["Merged"]
                     try:
                         idx = next(
