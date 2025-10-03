@@ -67,8 +67,8 @@ def _df_display_without_time(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ----------------- app -----------------
-st.set_page_config(page_title="🦟 Malaria Apps", layout="wide")
-st.title("🦟 Malaria Apps")
+st.set_page_config(page_title="🦟 Malaria App", layout="wide")
+st.title("🦟 Malaria App")
 
 # === Section 0: Sheet Merger (single or multiple files) ===
 st.header("Sheet Merger (single or multiple files)")
