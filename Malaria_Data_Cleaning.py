@@ -80,7 +80,6 @@ def clean_malaria_data(df):
             '%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d',
             '%m/%d/%Y', '%m-%d-%Y', '%d/%m/%Y', '%d-%m-%Y',
             '%m/%d/%y', '%m-%d-%y', '%d/%m/%y', '%d-%m-%y',
-            '%d-%b-%y', '%d-%b-%Y',
         ]
 
         for idx, val in df[date_col].items():
