@@ -142,6 +142,18 @@ if merge_files:
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
                     merged_df.to_excel(writer, index=False, sheet_name="Merged")
+
+                    # Format SCREENING_DATE column for display (keeps strings as-is)
+                    ws = writer.sheets["Merged"]
+                    try:
+                        idx = next(
+                            i for i, c in enumerate(merged_df.columns)
+                            if str(c).strip().lower() == "screening_date"
+                        )
+                        date_fmt = writer.book.add_format({"num_format": "DD-MMM-YY"})
+                        ws.set_column(idx, idx, 12, date_fmt)
+                    except StopIteration:
+                        pass
                 out.seek(0)
                 st.download_button(
                     label="📥 Download merged-only workbook",
@@ -169,6 +181,17 @@ if merge_files:
 
                             for r in dataframe_to_rows(merged_df, index=False, header=True):
                                 ws.append(r)
+                            # Display real dates as DD-MMM-YY; text remains untouched
+                            try:
+                                date_col = next(
+                                    i for i, c in enumerate(merged_df.columns, start=1)
+                                    if str(c).strip().lower() == "screening_date"
+                                )
+                                for row_idx in range(2, len(merged_df) + 2):  # skip header
+                                    cell = ws.cell(row=row_idx, column=date_col)
+                                    cell.number_format = "DD-MMM-YY"
+                            except StopIteration:
+                                pass
 
                             fout = io.BytesIO()
                             wb.save(fout); fout.seek(0)
