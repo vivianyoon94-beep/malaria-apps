@@ -7,10 +7,9 @@ import streamlit as st
 from Malaria_Data_Cleaning import clean_malaria_data
 from Malaria_Indicator import compute_indicators
 
-# preserve untouched formatting for .xlsx writes / injection
+# preserve untouched formatting for .xlsx writes
 from openpyxl import load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-
 
 # ---------- small helpers ----------
 def put_comment_first(df: pd.DataFrame) -> pd.DataFrame:
@@ -31,44 +30,37 @@ def _validate_headers_match(dfs):
             return False, i
     return True, None
 
-def _strip_time_from_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """For true datetime64 columns, keep only the date value (for writing)."""
-    for col, dtype in df.dtypes.items():
-        if pd.api.types.is_datetime64_any_dtype(dtype):
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
-    return df
-
-def _format_worksheet_dates(ws, df: pd.DataFrame, header_row: int = 1, first_data_row: int = 2):
-    """
-    On an openpyxl worksheet that already has the DataFrame written,
-    set Excel number format 'DD-MMM-YY' for columns that contain real date/datetime values.
-    """
-    from datetime import date as _dt_date
-    date_cols = []
-    for j, col in enumerate(df.columns, start=1):
-        s = df[col]
-        if pd.api.types.is_datetime64_any_dtype(s) or s.map(lambda v: isinstance(v, (_dt_date, pd.Timestamp))).any():
-            date_cols.append(j)
-    for j in date_cols:
-        for col_cells in ws.iter_cols(min_col=j, max_col=j, min_row=first_data_row):
-            for cell in col_cells:
-                cell.number_format = "DD-MMM-YY"
-
 def _df_display_without_time(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a copy for Streamlit preview where datetime64 columns are rendered as 'DD-MMM-YY'.
-    Does not touch string columns (e.g., '08.4.25' stays as typed).
-    """
+    """Preview helper: render datetime64 columns as 'DD-MMM-YY' (strings unchanged)."""
     out = df.copy()
     for col, dtype in out.dtypes.items():
         if pd.api.types.is_datetime64_any_dtype(dtype):
             out[col] = pd.to_datetime(out[col], errors="coerce").dt.strftime("%d-%b-%y")
     return out
 
+def _freeze_date_text(df: pd.DataFrame, col_name: str = "SCREENING_DATE") -> pd.DataFrame:
+    """
+    Keep user-entered date text exactly as typed.
+    If a cell is a real date/datetime (Timestamp), convert it to a TEXT 'DD-MMM-YY'.
+    If the cell is already text (e.g., '03-Oct-24' or '08.4.25'), leave it untouched.
+    """
+    cmap = {c.lower(): c for c in df.columns}
+    col = cmap.get(col_name.lower())
+    if not col:
+        return df
+
+    from datetime import date as _dt_date, datetime as _dt_datetime
+    def _as_text(v):
+        if isinstance(v, (pd.Timestamp, _dt_date, _dt_datetime)):
+            return pd.to_datetime(v).strftime("%d-%b-%y")
+        return v  # keep strings as-is
+
+    df[col] = df[col].map(_as_text)
+    return df
 
 # ----------------- app -----------------
-st.set_page_config(page_title="🦟 Malaria App", layout="wide")
-st.title("🦟 Malaria App")
+st.set_page_config(page_title="🦟 Malaria Application", layout="wide")
+st.title("🦟 Malaria Application")
 
 # === Section 0: Sheet Merger (single or multiple files) ===
 st.header("Sheet Merger (single or multiple files)")
@@ -101,7 +93,7 @@ if merge_files:
         selections[f.name] = {"sheets": chosen, "xls": xls, "file": f}
 
     st.write("")
-    run_merge = st.button("Run", key="run_merge_multi")
+    run_merge = st.button("Run merge", key="run_merge_multi")
 
     if run_merge:
         parts = []
@@ -113,6 +105,10 @@ if merge_files:
             for s in chosen:
                 df = xls.parse(sheet_name=s)
                 df.columns = [str(c) for c in df.columns]
+
+                # --- append-only rule: keep strings as-is; freeze real dates to DD-MMM-YY TEXT
+                df = _freeze_date_text(df, "SCREENING_DATE")
+
                 df["DATA_SOURCE"] = s
                 df["FILE_SOURCE"] = fname
                 parts.append(df)
@@ -134,22 +130,15 @@ if merge_files:
                     tmp = df[ordered + ["DATA_SOURCE", "FILE_SOURCE"]].copy()
                     normalized.append(tmp)
                 merged_df = pd.concat(normalized, ignore_index=True)
-                merged_df = _strip_time_from_datetime_columns(merged_df)
 
                 st.subheader("👀 Merged preview (first 50 rows)")
                 st.dataframe(_df_display_without_time(merged_df).head(50), use_container_width=True)
 
-                # ---- Downloads ----
                 st.subheader("⬇️ Download")
 
-                # 1) merged-only workbook (date format set)
+                # 1) merged-only workbook (write values as-is; no excel date formats)
                 out = io.BytesIO()
-                with pd.ExcelWriter(
-                    out,
-                    engine="xlsxwriter",
-                    datetime_format="dd-mmm-yy",
-                    date_format="dd-mmm-yy",
-                ) as writer:
+                with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
                     merged_df.to_excel(writer, index=False, sheet_name="Merged")
                 out.seek(0)
                 st.download_button(
@@ -159,10 +148,9 @@ if merge_files:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
-                # 2) ZIP with original files + merged sheet (first, date format columns)
+                # 2) ZIP with original files + merged sheet (first tab), values as-is
                 zipbuf = io.BytesIO()
                 with zipfile.ZipFile(zipbuf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    from datetime import date as _dt_date
                     for f, xls in file_objs:
                         fname = f.name
                         if fname.lower().endswith(".xlsx"):
@@ -180,32 +168,14 @@ if merge_files:
                             for r in dataframe_to_rows(merged_df, index=False, header=True):
                                 ws.append(r)
 
-                            # Format date columns for display
-                            date_cols_idx = []
-                            for j, col in enumerate(merged_df.columns, start=1):
-                                col_series = merged_df[col]
-                                if pd.api.types.is_datetime64_any_dtype(col_series) or col_series.map(
-                                    lambda v: isinstance(v, (_dt_date, pd.Timestamp))
-                                ).any():
-                                    date_cols_idx.append(j)
-                            for j in date_cols_idx:
-                                for col_cells in ws.iter_cols(min_col=j, max_col=j, min_row=2):
-                                    for cell in col_cells:
-                                        cell.number_format = "DD-MMM-YY"
-
                             fout = io.BytesIO()
                             wb.save(fout); fout.seek(0)
                             zf.writestr(fname, fout.read())
                         else:
-                            # .xls fallback: new xlsx with merged-only (date format applied)
+                            # .xls fallback: new xlsx with merged-only (values as-is)
                             alt_name = fname.rsplit(".", 1)[0] + "_merged_only.xlsx"
                             bout = io.BytesIO()
-                            with pd.ExcelWriter(
-                                bout,
-                                engine="xlsxwriter",
-                                datetime_format="dd-mmm-yy",
-                                date_format="dd-mmm-yy",
-                            ) as writer:
+                            with pd.ExcelWriter(bout, engine="xlsxwriter") as writer:
                                 merged_df.to_excel(writer, index=False, sheet_name="Merged")
                             bout.seek(0)
                             zf.writestr(alt_name, bout.read())
@@ -250,14 +220,9 @@ if clean_file is not None:
                 for sheet in selected:
                     raw_df = clean_xls.parse(sheet_name=sheet)
                     cleaned = clean_malaria_data(raw_df)
-                    # preview copy without time
-                    cleaned_display = put_comment_first(_df_display_without_time(cleaned.copy()))
-                    # file copy with COMMENT moved last (data preserved)
-                    cleaned_file = put_comment_last(cleaned.copy())
-
                     cleaned_by_sheet[sheet] = {
-                        "display": cleaned_display,
-                        "file": cleaned_file,
+                        "display": put_comment_first(cleaned.copy()),
+                        "file": put_comment_last(cleaned.copy()),
                     }
 
                 st.subheader("⚠️ Error Rows Preview (by sheet)")
@@ -310,13 +275,11 @@ if clean_file is not None:
                             ws = wb.create_sheet(title=sheet, index=idx)
                             for r in dataframe_to_rows(cleaned_by_sheet[sheet]["file"], index=False, header=True):
                                 ws.append(r)
-                            # NEW: make dates display as DD-MMM-YY
-                            _format_worksheet_dates(ws, cleaned_by_sheet[sheet]["file"])
 
                     out = io.BytesIO()
                     wb.save(out); out.seek(0)
                     st.download_button(
-                        label="📥 Download Cleaned Workbook",
+                        label="📥 Download Cleaned Workbook (preserve untouched formatting)",
                         data=out.getvalue(),
                         file_name="malaria_cleaned_all.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -366,8 +329,7 @@ if ind_file is not None:
                     for tab, sheet in zip(tabs, outputs.keys()):
                         with tab:
                             st.caption(f"Sheet: {sheet}")
-                            # display without time
-                            st.dataframe(_df_display_without_time(outputs[sheet]).head(50), use_container_width=True)
+                            st.dataframe(outputs[sheet].head(50), use_container_width=True)
 
                 if errors:
                     st.warning("Some sheets failed to process:")
@@ -393,13 +355,11 @@ if ind_file is not None:
                                 ws = wb.create_sheet(title=sheet, index=idx)
                                 for r in dataframe_to_rows(outputs[sheet], index=False, header=True):
                                     ws.append(r)
-                                # NEW: format date columns for display
-                                _format_worksheet_dates(ws, outputs[sheet])
 
                         out = io.BytesIO()
                         wb.save(out); out.seek(0)
                         st.download_button(
-                            label="📥 Download Indicators Workbook",
+                            label="📥 Download Indicators Workbook (preserve untouched formatting)",
                             data=out.getvalue(),
                             file_name="malaria_indicators_all.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
